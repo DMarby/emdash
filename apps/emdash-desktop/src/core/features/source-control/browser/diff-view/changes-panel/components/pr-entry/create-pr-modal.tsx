@@ -11,7 +11,7 @@ import {
 } from '@emdash/ui/react/primitives';
 import { ChevronDown, GitBranch, GitPullRequest } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useGitHubAccounts } from '@core/features/github/api/browser/useGithubAccounts';
 import { GitHubIdentityStrip } from '@core/features/github/contributions/browser/identity-strip';
 import { persistProjectGitHubAccount } from '@core/features/github/contributions/browser/identity-strip-persist';
@@ -37,7 +37,9 @@ import { parseRepositoryRef } from '@core/primitives/repository/api';
 import { pullRequestErrorMessage } from '@core/services/pull-requests/api';
 import { getPullRequestsRuntimeClient } from '@core/services/pull-requests/api/client';
 import { resolveInitialBaseBranch } from './base-branch';
+import { humanizeBranchName } from './pr-defaults';
 import { getTargetRemotes, resolveCreatePrTargetRemote } from './target-remote';
+import { useCreatePrDefaults } from './use-create-pr-defaults';
 
 export type CreatePrModalArgs = {
   projectId: string;
@@ -50,7 +52,7 @@ export type CreatePrModalArgs = {
 
 export const CreatePrModal = observer(function CreatePrModal({
   projectId,
-  taskId: _taskId,
+  taskId,
   repositoryUrl,
   branchName,
   draft,
@@ -58,8 +60,10 @@ export const CreatePrModal = observer(function CreatePrModal({
 }: CreatePrModalArgs) {
   const { complete } = useModalController('createPrModal');
   const openGithubConnectModal = useOpenModal('githubConnectModal');
-  const [title, setTitle] = useState(branchName);
+  const [title, setTitle] = useState(() => humanizeBranchName(branchName));
   const [description, setDescription] = useState('');
+  const [titleEdited, setTitleEdited] = useState(false);
+  const [descriptionEdited, setDescriptionEdited] = useState(false);
   const [selectedBaseOverride, setSelectedBaseOverride] = useState<GitBranchRef | undefined>();
   const [selectedTargetRemoteName, setSelectedTargetRemoteName] = useState<string | undefined>();
   const [isCreating, setIsCreating] = useState(false);
@@ -86,6 +90,7 @@ export const CreatePrModal = observer(function CreatePrModal({
     void persistProjectGitHubAccount(projectId, account.accountId);
   };
   const defaultBranch = repo?.defaultBranchRef;
+  const headOid = checkout?.headOid ?? undefined;
   const needsPush = !checkout?.isPublished || checkout.aheadCount > 0;
   const baseRemoteResolution = repo?.effectiveGitSettings.baseRemote ?? null;
   const projectRemoteName = repo?.baseRemote?.name ?? null;
@@ -115,6 +120,33 @@ export const CreatePrModal = observer(function CreatePrModal({
       defaultBranch,
       targetRemote?.remote.name ?? projectRemoteName
     );
+
+  const prDefaults = useCreatePrDefaults({
+    projectId,
+    workspaceId,
+    branchName,
+    base: selectedBase,
+    headOid,
+  });
+
+  // Reset local state when the modal is reused for a different task/branch. The
+  // modal component instance can be retained across a close/reopen, so useState
+  // initializers do not re-run; without this, one task's edited title (and its
+  // edit latch) could leak into another task's modal. Setting identical values
+  // on the initial mount is a no-op (React bails out on unchanged state).
+  useEffect(() => {
+    setTitle(humanizeBranchName(branchName));
+    setDescription('');
+    setTitleEdited(false);
+    setDescriptionEdited(false);
+    setSelectedBaseOverride(undefined);
+  }, [taskId, branchName]);
+
+  useEffect(() => {
+    if (!prDefaults) return;
+    if (!titleEdited) setTitle(prDefaults.title);
+    if (!descriptionEdited) setDescription(prDefaults.body);
+  }, [prDefaults, titleEdited, descriptionEdited]);
 
   const handleTargetRemoteChange = (remoteName: string) => {
     setSelectedTargetRemoteName(remoteName);
@@ -250,7 +282,10 @@ export const CreatePrModal = observer(function CreatePrModal({
               placeholder="PR title"
               autoFocus
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitleEdited(true);
+                setTitle(e.target.value);
+              }}
               disabled={!hasGitHubRemote}
             />
           </Field.Root>
@@ -258,7 +293,10 @@ export const CreatePrModal = observer(function CreatePrModal({
             <Field.Label>Description</Field.Label>
             <Textarea
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => {
+                setDescriptionEdited(true);
+                setDescription(e.target.value);
+              }}
               rows={1}
               disabled={!hasGitHubRemote}
             />
